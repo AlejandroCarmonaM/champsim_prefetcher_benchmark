@@ -1,0 +1,190 @@
+#include "cache.h"
+#include <cstdint>
+
+#define STRIDE_TABLE_SIZE 2048
+#define CSPT_SIZE 2048 // size for the complex stride prediction table
+#define PREFETCH_DEGREE 3
+
+// Each history table entry has: PC, last cache line address, and the last three observed strides
+struct HistoryEntry {
+    uint64_t ip;
+    uint64_t last_cl_addr;
+    int64_t stride1; 
+    int64_t stride2; 
+    int64_t stride3; 
+};
+
+static HistoryEntry history_table[STRIDE_TABLE_SIZE];
+
+// Complex Stride Prediction Table (CSPT) holds the "predicted stride" based on the last three strides and IP
+struct CSPTEntry {
+    int64_t predicted_stride;
+};
+
+static CSPTEntry cspt_table[CSPT_SIZE];
+
+// Add signature array to store temporary stride pattern
+struct SignatureArray {
+    int64_t strides[3];
+    
+    void initialize(int64_t s1, int64_t s2, int64_t s3) {
+        strides[0] = s1;
+        strides[1] = s2;
+        strides[2] = s3;
+    }
+    
+    void update(int64_t new_stride) {
+        strides[2] = strides[1];
+        strides[1] = strides[0];
+        strides[0] = new_stride;
+    }
+};
+
+// It shifts and XORs the values to generate a fairly distributed index for CSPT lookups
+static inline uint64_t compute_cspt_index(uint64_t ip, int64_t s1, int64_t s2, int64_t s3)
+{
+    // mask to 16 bits each for strides
+    uint64_t us1 = (uint64_t)(s1 & 0xFFFF);
+    uint64_t us2 = (uint64_t)(s2 & 0xFFFF);
+    uint64_t us3 = (uint64_t)(s3 & 0xFFFF);
+    // combine IP and strides
+    uint64_t hash_val = (ip << 32) ^ (us1 << 16) ^ (us2 << 8) ^ us3;
+    return hash_val % CSPT_SIZE;
+}
+
+static inline uint64_t compute_cspt_index_avalanche(uint64_t ip, int64_t s1, int64_t s2, int64_t s3)
+{
+    // Mask to 16 bits
+    uint64_t us1 = (uint64_t)(s1 & 0xFFFF);
+    uint64_t us2 = (uint64_t)(s2 & 0xFFFF);
+    uint64_t us3 = (uint64_t)(s3 & 0xFFFF);
+
+    // Combine IP and strides
+    uint64_t val = (ip << 32) ^ (us1 << 16) ^ (us2 << 8) ^ us3;
+
+    // Simple avalanche mix
+    val ^= val >> 33;
+    val *= 0xb492b66fbe98f273ULL;
+    val ^= val >> 33;
+    val *= 0x9ae16a3b2f90404fULL;
+    val ^= val >> 33;
+
+    return val % CSPT_SIZE;
+}
+
+
+void CACHE::l1d_prefetcher_initialize()
+{
+    // Initialize history table
+    for(int i = 0; i < STRIDE_TABLE_SIZE; i++){
+        history_table[i].ip = 0;
+        history_table[i].last_cl_addr = 0;
+        history_table[i].stride1 = 0;
+        history_table[i].stride2 = 0;
+        history_table[i].stride3 = 0;
+    }
+    // Initialize CSPT
+    for(int i = 0; i < CSPT_SIZE; i++){
+        cspt_table[i].predicted_stride = 0;
+    }
+}
+
+void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type)
+{
+    uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;  // cache line address calculated from addr
+    int index = -1;
+
+    // Look up or create entry in history table
+    for(int i = 0; i < STRIDE_TABLE_SIZE; i++){
+        if(history_table[i].ip == ip){
+            index = i;
+            break;
+        }
+    }
+    // If not found, allocate a new entry
+    if(index == -1) {
+        for(int i = 0; i < STRIDE_TABLE_SIZE; i++){
+            // first empty slot is used
+            if(history_table[i].ip == 0){
+                index = i;
+                history_table[i].ip = ip; // store IP
+                history_table[i].last_cl_addr = cl_addr; // store last cache line address
+                history_table[i].stride1 = 0; // initialize strides
+                history_table[i].stride2 = 0; 
+                history_table[i].stride3 = 0; 
+                break; // exit loop after allocation
+            }
+        }
+        // either we allocated a new entry or table is full, in both cases return
+        return;
+    }
+
+    // Calculate new stride
+    int64_t new_stride = (int64_t)cl_addr - (int64_t)history_table[index].last_cl_addr;
+    if(new_stride == 0) {
+        // same cache block, update and return (no prefetch)
+        history_table[index].last_cl_addr = cl_addr;
+        return;
+    }
+
+    // 1) TRAINNING PHASE: train CSPT with old pattern
+    uint64_t old_index = compute_cspt_index_avalanche(ip, history_table[index].stride1, 
+                                            history_table[index].stride2, history_table[index].stride3);
+    int64_t old_predicted = cspt_table[old_index].predicted_stride;
+    // update CSPT if old stride is not the same as new stride
+    if(old_predicted != new_stride) {
+        // update predicted stride for this pattern
+        cspt_table[old_index].predicted_stride = new_stride;
+    }
+
+    // 2) Shift old strides; store new_stride as stride1
+    history_table[index].stride3 = history_table[index].stride2;
+    history_table[index].stride2 = history_table[index].stride1;
+    history_table[index].stride1 = new_stride;
+    history_table[index].last_cl_addr = cl_addr;
+
+    // 3) INFERENCE PHASE with multiple prefetches
+    SignatureArray sig_array;
+    sig_array.initialize(history_table[index].stride1,
+                        history_table[index].stride2,
+                        history_table[index].stride3);
+
+    uint64_t current_addr = addr;
+    
+    // Issue multiple prefetches
+    for(int degree = 0; degree < PREFETCH_DEGREE; degree++) {
+        // Compute CSPT index using current signature
+        uint64_t new_index_cspt = compute_cspt_index_avalanche(ip, 
+                                                    sig_array.strides[0],
+                                                    sig_array.strides[1], 
+                                                    sig_array.strides[2]);
+        
+        int64_t predicted_stride = cspt_table[new_index_cspt].predicted_stride;
+        if(predicted_stride == 0) break; // Stop if no prediction available
+        
+        // Calculate next address to prefetch
+        uint64_t next_addr = current_addr + (predicted_stride << LOG2_BLOCK_SIZE);
+        
+        // Check page boundary
+        if((next_addr >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
+            break;
+            
+        // Issue prefetch
+        prefetch_line(ip, addr, next_addr, FILL_L1, 0);
+        
+        // Update for next iteration
+        current_addr = next_addr;
+        sig_array.update(predicted_stride);
+    }
+}
+
+void CACHE::l1d_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, 
+                                      uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+    // not used
+}
+
+void CACHE::l1d_prefetcher_final_stats()
+{
+    // not used
+}

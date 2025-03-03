@@ -1,0 +1,28 @@
+{
+    "files.associations": {
+        "*.l1d_pref": "cpp",
+        "chrono": "cpp",
+        "cstdint": "cpp",
+        "array": "cpp",
+        "hash_map": "cpp",
+        "deque": "cpp",
+        "list": "cpp",
+        "string": "cpp",
+        "unordered_map": "cpp",
+        "vector": "cpp",
+        "string_view": "cpp",
+        "initializer_list": "cpp",
+        "__bit_reference": "cpp",
+        "__hash_table": "cpp",
+        "__split_buffer": "cpp",
+        "__tree": "cpp",
+        "filesystem": "cpp",
+        "iterator": "cpp",
+        "map": "cpp",
+        "set": "cpp",
+        "*.tcc": "cpp",
+        "system_error": "cpp",
+        "atomic": "cpp",
+        "ios": "cpp"
+    }
+}

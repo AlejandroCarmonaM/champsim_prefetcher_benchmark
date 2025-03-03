@@ -1,0 +1,5 @@
+Prefetcher,Application,Prefetch_hits,Prefetch_issued,Accuracy,L1D_LOAD_MISS,L1D_RFO_MISS,Demand_misses,Coverage,IPC
+s5_cplxstride_avalanche,602.gcc_s-2226B,1618892,4738132,0.341673,1884821,739,1885560,0.461953,0.211298
+s5_cplxstride_avalanche,623.xalancbmk_s-202B,920238,2098909,0.438436,337243,0,337243,0.731811,1.166110
+s5_cplxstride_avalanche,649.fotonik3d_s-1176B,390302,1557119,0.250657,270611,763,271374,0.589869,1.050860
+s5_cplxstride_avalanche,654.roms_s-1390B,572588,1573791,0.363827,674690,498465,1173155,0.327991,0.579137
