@@ -1,0 +1,8 @@
+trace_files = [
+    '602.gcc_s-2226B.champsimtrace.xz',
+    '623.xalancbmk_s-202B.champsimtrace.xz',
+    '649.fotonik3d_s-1176B.champsimtrace.xz',
+    '654.roms_s-1390B.champsimtrace.xz'
+]
+
+Available at: https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/

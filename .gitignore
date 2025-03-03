@@ -5,7 +5,7 @@ prefetcher/llc_prefetcher.cc
 branch/branch_predictor.cc
 replacement/llc_replacement.cc
 
-dpc3_traces/
+dpc3_traces/*.xz
 
 inc/champsim.h.bak
 
